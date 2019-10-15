@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -55,9 +55,6 @@ import (
 	// Register defaults in pkg/scheduler/algorithmprovider.
 	_ "k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
-	"k8s.io/kubernetes/pkg/scheduler/factory"
-	schedulerplugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	taintutils "k8s.io/kubernetes/pkg/util/taints"
 	"k8s.io/kubernetes/test/integration/framework"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -142,8 +139,7 @@ func initTestScheduler(
 	policy *schedulerapi.Policy,
 ) *testContext {
 	// Pod preemption is enabled by default scheduler configuration.
-	return initTestSchedulerWithOptions(t, context, setPodInformer, policy, schedulerplugins.NewDefaultRegistry(),
-		nil, []schedulerconfig.PluginConfig{}, time.Second)
+	return initTestSchedulerWithOptions(t, context, setPodInformer, policy, time.Second)
 }
 
 // initTestSchedulerWithOptions initializes a test environment and creates a scheduler with default
@@ -153,9 +149,6 @@ func initTestSchedulerWithOptions(
 	context *testContext,
 	setPodInformer bool,
 	policy *schedulerapi.Policy,
-	pluginRegistry schedulerframework.Registry,
-	plugins *schedulerconfig.Plugins,
-	pluginConfig []schedulerconfig.PluginConfig,
 	resyncPeriod time.Duration,
 	opts ...scheduler.Option,
 ) *testContext {
@@ -166,7 +159,7 @@ func initTestSchedulerWithOptions(
 
 	// create independent pod informer if required
 	if setPodInformer {
-		podInformer = factory.NewPodInformer(context.clientSet, 12*time.Hour)
+		podInformer = scheduler.NewPodInformer(context.clientSet, 12*time.Hour)
 	} else {
 		podInformer = context.informerFactory.Core().V1().Pods()
 	}
@@ -190,23 +183,11 @@ func initTestSchedulerWithOptions(
 	opts = append([]scheduler.Option{scheduler.WithBindTimeoutSeconds(600)}, opts...)
 	context.scheduler, err = scheduler.New(
 		context.clientSet,
-		context.informerFactory.Core().V1().Nodes(),
+		context.informerFactory,
 		podInformer,
-		context.informerFactory.Core().V1().PersistentVolumes(),
-		context.informerFactory.Core().V1().PersistentVolumeClaims(),
-		context.informerFactory.Core().V1().ReplicationControllers(),
-		context.informerFactory.Apps().V1().ReplicaSets(),
-		context.informerFactory.Apps().V1().StatefulSets(),
-		context.informerFactory.Core().V1().Services(),
-		context.informerFactory.Policy().V1beta1().PodDisruptionBudgets(),
-		context.informerFactory.Storage().V1().StorageClasses(),
-		context.informerFactory.Storage().V1beta1().CSINodes(),
 		recorder,
 		algorithmSrc,
 		context.stopCh,
-		pluginRegistry,
-		plugins,
-		pluginConfig,
 		opts...,
 	)
 
@@ -273,7 +254,6 @@ func initTest(t *testing.T, nsPrefix string) *testContext {
 func initTestDisablePreemption(t *testing.T, nsPrefix string) *testContext {
 	return initTestSchedulerWithOptions(
 		t, initTestMaster(t, nsPrefix, nil), true, nil,
-		schedulerplugins.NewDefaultRegistry(), nil, []schedulerconfig.PluginConfig{},
 		time.Second, scheduler.WithPreemptionDisabled(true))
 }
 

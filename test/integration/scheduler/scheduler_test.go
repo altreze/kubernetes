@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,10 +41,8 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler"
 	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
 	_ "k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
-	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	kubeschedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
-	"k8s.io/kubernetes/pkg/scheduler/factory"
-	schedulerplugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	"k8s.io/kubernetes/test/integration/framework"
 )
@@ -62,12 +62,12 @@ func PredicateTwo(pod *v1.Pod, meta predicates.PredicateMetadata, nodeInfo *sche
 	return true, nil, nil
 }
 
-func PriorityOne(pod *v1.Pod, nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo, nodes []*v1.Node) (schedulerapi.HostPriorityList, error) {
-	return []schedulerapi.HostPriority{}, nil
+func PriorityOne(pod *v1.Pod, nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo, nodes []*v1.Node) (schedulerframework.NodeScoreList, error) {
+	return []schedulerframework.NodeScore{}, nil
 }
 
-func PriorityTwo(pod *v1.Pod, nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo, nodes []*v1.Node) (schedulerapi.HostPriorityList, error) {
-	return []schedulerapi.HostPriority{}, nil
+func PriorityTwo(pod *v1.Pod, nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo, nodes []*v1.Node) (schedulerframework.NodeScoreList, error) {
+	return []schedulerframework.NodeScore{}, nil
 }
 
 // TestSchedulerCreationFromConfigMap verifies that scheduler can be created
@@ -85,15 +85,16 @@ func TestSchedulerCreationFromConfigMap(t *testing.T) {
 	informerFactory := informers.NewSharedInformerFactory(clientSet, 0)
 
 	// Pre-register some predicate and priority functions
-	factory.RegisterFitPredicate("PredicateOne", PredicateOne)
-	factory.RegisterFitPredicate("PredicateTwo", PredicateTwo)
-	factory.RegisterPriorityFunction("PriorityOne", PriorityOne, 1)
-	factory.RegisterPriorityFunction("PriorityTwo", PriorityTwo, 1)
+	scheduler.RegisterFitPredicate("PredicateOne", PredicateOne)
+	scheduler.RegisterFitPredicate("PredicateTwo", PredicateTwo)
+	scheduler.RegisterPriorityFunction("PriorityOne", PriorityOne, 1)
+	scheduler.RegisterPriorityFunction("PriorityTwo", PriorityTwo, 1)
 
 	for i, test := range []struct {
 		policy               string
 		expectedPredicates   sets.String
 		expectedPrioritizers sets.String
+		expectedPlugins      map[string][]kubeschedulerconfig.Plugin
 	}{
 		{
 			policy: `{
@@ -128,16 +129,12 @@ func TestSchedulerCreationFromConfigMap(t *testing.T) {
 				"CheckNodeDiskPressure",
 				"CheckNodeMemoryPressure",
 				"CheckNodePIDPressure",
-				"CheckVolumeBinding",
 				"GeneralPredicates",
 				"MatchInterPodAffinity",
 				"MaxAzureDiskVolumeCount",
 				"MaxCSIVolumeCountPred",
 				"MaxEBSVolumeCount",
 				"MaxGCEPDVolumeCount",
-				"NoDiskConflict",
-				"NoVolumeZoneConflict",
-				"PodToleratesNodeTaints",
 			),
 			expectedPrioritizers: sets.NewString(
 				"BalancedResourceAllocation",
@@ -146,9 +143,19 @@ func TestSchedulerCreationFromConfigMap(t *testing.T) {
 				"NodeAffinityPriority",
 				"NodePreferAvoidPodsPriority",
 				"SelectorSpreadPriority",
-				"TaintTolerationPriority",
-				"ImageLocalityPriority",
 			),
+			expectedPlugins: map[string][]kubeschedulerconfig.Plugin{
+				"FilterPlugin": {
+					{Name: "VolumeRestrictions"},
+					{Name: "TaintToleration"},
+					{Name: "VolumeBinding"},
+					{Name: "VolumeZone"},
+				},
+				"ScorePlugin": {
+					{Name: "ImageLocality", Weight: 1},
+					{Name: "TaintToleration", Weight: 1},
+				},
+			},
 		},
 		{
 			policy: `{
@@ -193,16 +200,12 @@ kind: Policy
 				"CheckNodeDiskPressure",
 				"CheckNodeMemoryPressure",
 				"CheckNodePIDPressure",
-				"CheckVolumeBinding",
 				"GeneralPredicates",
 				"MatchInterPodAffinity",
 				"MaxAzureDiskVolumeCount",
 				"MaxCSIVolumeCountPred",
 				"MaxEBSVolumeCount",
 				"MaxGCEPDVolumeCount",
-				"NoDiskConflict",
-				"NoVolumeZoneConflict",
-				"PodToleratesNodeTaints",
 			),
 			expectedPrioritizers: sets.NewString(
 				"BalancedResourceAllocation",
@@ -211,9 +214,19 @@ kind: Policy
 				"NodeAffinityPriority",
 				"NodePreferAvoidPodsPriority",
 				"SelectorSpreadPriority",
-				"TaintTolerationPriority",
-				"ImageLocalityPriority",
 			),
+			expectedPlugins: map[string][]kubeschedulerconfig.Plugin{
+				"FilterPlugin": {
+					{Name: "VolumeRestrictions"},
+					{Name: "TaintToleration"},
+					{Name: "VolumeBinding"},
+					{Name: "VolumeZone"},
+				},
+				"ScorePlugin": {
+					{Name: "ImageLocality", Weight: 1},
+					{Name: "TaintToleration", Weight: 1},
+				},
+			},
 		},
 		{
 			policy: `apiVersion: v1
@@ -244,17 +257,8 @@ priorities: []
 		defaultBindTimeout := int64(30)
 
 		sched, err := scheduler.New(clientSet,
-			informerFactory.Core().V1().Nodes(),
-			factory.NewPodInformer(clientSet, 0),
-			informerFactory.Core().V1().PersistentVolumes(),
-			informerFactory.Core().V1().PersistentVolumeClaims(),
-			informerFactory.Core().V1().ReplicationControllers(),
-			informerFactory.Apps().V1().ReplicaSets(),
-			informerFactory.Apps().V1().StatefulSets(),
-			informerFactory.Core().V1().Services(),
-			informerFactory.Policy().V1beta1().PodDisruptionBudgets(),
-			informerFactory.Storage().V1().StorageClasses(),
-			informerFactory.Storage().V1beta1().CSINodes(),
+			informerFactory,
+			scheduler.NewPodInformer(clientSet, 0),
 			eventBroadcaster.NewRecorder(legacyscheme.Scheme, v1.DefaultSchedulerName),
 			kubeschedulerconfig.SchedulerAlgorithmSource{
 				Policy: &kubeschedulerconfig.SchedulerPolicySource{
@@ -265,9 +269,6 @@ priorities: []
 				},
 			},
 			nil,
-			schedulerplugins.NewDefaultRegistry(),
-			nil,
-			[]kubeschedulerconfig.PluginConfig{},
 			scheduler.WithName(v1.DefaultSchedulerName),
 			scheduler.WithHardPodAffinitySymmetricWeight(v1.DefaultHardPodAffinitySymmetricWeight),
 			scheduler.WithBindTimeoutSeconds(defaultBindTimeout),
@@ -290,6 +291,10 @@ priorities: []
 		}
 		if !schedPrioritizers.Equal(test.expectedPrioritizers) {
 			t.Errorf("Expected priority functions %v, got %v", test.expectedPrioritizers, schedPrioritizers)
+		}
+		schedPlugins := sched.Framework.ListPlugins()
+		if diff := cmp.Diff(test.expectedPlugins, schedPlugins); diff != "" {
+			t.Errorf("unexpected predicates diff (-want, +got): %s", diff)
 		}
 	}
 }
@@ -315,17 +320,8 @@ func TestSchedulerCreationFromNonExistentConfigMap(t *testing.T) {
 	defaultBindTimeout := int64(30)
 
 	_, err := scheduler.New(clientSet,
-		informerFactory.Core().V1().Nodes(),
-		factory.NewPodInformer(clientSet, 0),
-		informerFactory.Core().V1().PersistentVolumes(),
-		informerFactory.Core().V1().PersistentVolumeClaims(),
-		informerFactory.Core().V1().ReplicationControllers(),
-		informerFactory.Apps().V1().ReplicaSets(),
-		informerFactory.Apps().V1().StatefulSets(),
-		informerFactory.Core().V1().Services(),
-		informerFactory.Policy().V1beta1().PodDisruptionBudgets(),
-		informerFactory.Storage().V1().StorageClasses(),
-		informerFactory.Storage().V1beta1().CSINodes(),
+		informerFactory,
+		scheduler.NewPodInformer(clientSet, 0),
 		eventBroadcaster.NewRecorder(legacyscheme.Scheme, v1.DefaultSchedulerName),
 		kubeschedulerconfig.SchedulerAlgorithmSource{
 			Policy: &kubeschedulerconfig.SchedulerPolicySource{
@@ -336,9 +332,6 @@ func TestSchedulerCreationFromNonExistentConfigMap(t *testing.T) {
 			},
 		},
 		nil,
-		schedulerplugins.NewDefaultRegistry(),
-		nil,
-		[]kubeschedulerconfig.PluginConfig{},
 		scheduler.WithName(v1.DefaultSchedulerName),
 		scheduler.WithHardPodAffinitySymmetricWeight(v1.DefaultHardPodAffinitySymmetricWeight),
 		scheduler.WithBindTimeoutSeconds(defaultBindTimeout))
@@ -596,7 +589,7 @@ func TestMultiScheduler(t *testing.T) {
 	}
 
 	// 5. create and start a scheduler with name "foo-scheduler"
-	context = initTestSchedulerWithOptions(t, context, true, nil, schedulerplugins.NewDefaultRegistry(), nil, []kubeschedulerconfig.PluginConfig{}, time.Second, scheduler.WithName(fooScheduler))
+	context = initTestSchedulerWithOptions(t, context, true, nil, time.Second, scheduler.WithName(fooScheduler))
 
 	//	6. **check point-2**:
 	//		- testPodWithAnnotationFitsFoo should be scheduled

@@ -37,8 +37,6 @@ import (
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/scheduler"
 	schedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
-	schedulerplugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	"k8s.io/kubernetes/test/integration/framework"
 
 	// Install "DefaultProvider" algorithprovider
@@ -116,8 +114,7 @@ func initTestSchedulerWithOptions(
 
 	var err error
 	context.scheduler, err = createSchedulerWithPodInformer(
-		context.clientSet, podInformer, context.informerFactory, schedulerplugins.NewDefaultRegistry(), nil,
-		[]schedulerconfig.PluginConfig{}, recorder, context.stopCh)
+		context.clientSet, podInformer, context.informerFactory, recorder, context.stopCh)
 
 	if err != nil {
 		t.Fatalf("Couldn't create scheduler: %v", err)
@@ -138,9 +135,6 @@ func createSchedulerWithPodInformer(
 	clientSet clientset.Interface,
 	podInformer coreinformers.PodInformer,
 	informerFactory informers.SharedInformerFactory,
-	pluginRegistry schedulerframework.Registry,
-	plugins *schedulerconfig.Plugins,
-	pluginConfig []schedulerconfig.PluginConfig,
 	recorder events.EventRecorder,
 	stopCh <-chan struct{},
 ) (*scheduler.Scheduler, error) {
@@ -148,25 +142,13 @@ func createSchedulerWithPodInformer(
 
 	return scheduler.New(
 		clientSet,
-		informerFactory.Core().V1().Nodes(),
+		informerFactory,
 		podInformer,
-		informerFactory.Core().V1().PersistentVolumes(),
-		informerFactory.Core().V1().PersistentVolumeClaims(),
-		informerFactory.Core().V1().ReplicationControllers(),
-		informerFactory.Apps().V1().ReplicaSets(),
-		informerFactory.Apps().V1().StatefulSets(),
-		informerFactory.Core().V1().Services(),
-		informerFactory.Policy().V1beta1().PodDisruptionBudgets(),
-		informerFactory.Storage().V1().StorageClasses(),
-		informerFactory.Storage().V1beta1().CSINodes(),
 		recorder,
 		schedulerconfig.SchedulerAlgorithmSource{
 			Provider: &defaultProviderName,
 		},
 		stopCh,
-		pluginRegistry,
-		plugins,
-		pluginConfig,
 	)
 }
 

@@ -32,7 +32,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -207,14 +206,6 @@ func GetMasterHost() string {
 	masterURL, err := url.Parse(TestContext.Host)
 	ExpectNoError(err)
 	return masterURL.Hostname()
-}
-
-func nowStamp() string {
-	return time.Now().Format(time.StampMilli)
-}
-
-func log(level string, format string, args ...interface{}) {
-	fmt.Fprintf(ginkgo.GinkgoWriter, nowStamp()+": "+level+": "+format+"\n", args...)
 }
 
 // RunIfContainerRuntimeIs runs if the container runtime is included in the runtimes.
@@ -945,60 +936,6 @@ func RandomSuffix() string {
 	return strconv.Itoa(rand.Intn(10000))
 }
 
-// ExpectEqual expects the specified two are the same, otherwise an exception raises
-func ExpectEqual(actual interface{}, extra interface{}, explain ...interface{}) {
-	if isEqual, _ := gomega.Equal(extra).Match(actual); !isEqual {
-		Logf("Unexpected unequal occurred: %v and %v", actual, extra)
-		debug.PrintStack()
-	}
-	gomega.Expect(actual).To(gomega.Equal(extra), explain...)
-}
-
-// ExpectNotEqual expects the specified two are not the same, otherwise an exception raises
-func ExpectNotEqual(actual interface{}, extra interface{}, explain ...interface{}) {
-	if isEqual, _ := gomega.Equal(extra).Match(actual); isEqual {
-		Logf("Expect to be unequal: %v and %v", actual, extra)
-		debug.PrintStack()
-	}
-	gomega.Expect(actual).NotTo(gomega.Equal(extra), explain...)
-}
-
-// ExpectError expects an error happens, otherwise an exception raises
-func ExpectError(err error, explain ...interface{}) {
-	if err == nil {
-		Logf("Expect error to occur.")
-		debug.PrintStack()
-	}
-	gomega.Expect(err).To(gomega.HaveOccurred(), explain...)
-}
-
-// ExpectNoError checks if "err" is set, and if so, fails assertion while logging the error.
-func ExpectNoError(err error, explain ...interface{}) {
-	ExpectNoErrorWithOffset(1, err, explain...)
-}
-
-// ExpectNoErrorWithOffset checks if "err" is set, and if so, fails assertion while logging the error at "offset" levels above its caller
-// (for example, for call chain f -> g -> ExpectNoErrorWithOffset(1, ...) error would be logged for "f").
-func ExpectNoErrorWithOffset(offset int, err error, explain ...interface{}) {
-	gomega.ExpectWithOffset(1+offset, err).NotTo(gomega.HaveOccurred(), explain...)
-}
-
-// ExpectNoErrorWithRetries checks if an error occurs with the given retry count.
-func ExpectNoErrorWithRetries(fn func() error, maxRetries int, explain ...interface{}) {
-	var err error
-	for i := 0; i < maxRetries; i++ {
-		err = fn()
-		if err == nil {
-			return
-		}
-		Logf("(Attempt %d of %d) Unexpected error occurred: %v", i+1, maxRetries, err)
-	}
-	if err != nil {
-		debug.PrintStack()
-	}
-	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), explain...)
-}
-
 // Cleanup stops everything from filePath from namespace ns and checks if everything matching selectors from the given namespace is correctly stopped.
 func Cleanup(filePath, ns string, selectors ...string) {
 	ginkgo.By("using delete to clean up resources")
@@ -1471,51 +1408,6 @@ func getNodeEvents(c clientset.Interface, nodeName string) []v1.Event {
 		return []v1.Event{}
 	}
 	return events.Items
-}
-
-// waitListSchedulableNodes is a wrapper around listing nodes supporting retries.
-func waitListSchedulableNodes(c clientset.Interface) (*v1.NodeList, error) {
-	var nodes *v1.NodeList
-	var err error
-	if wait.PollImmediate(Poll, SingleCallTimeout, func() (bool, error) {
-		nodes, err = c.CoreV1().Nodes().List(metav1.ListOptions{FieldSelector: fields.Set{
-			"spec.unschedulable": "false",
-		}.AsSelector().String()})
-		if err != nil {
-			if testutils.IsRetryableAPIError(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
-	}) != nil {
-		return nodes, err
-	}
-	return nodes, nil
-}
-
-// waitListSchedulableNodesOrDie is a wrapper around listing nodes supporting retries.
-func waitListSchedulableNodesOrDie(c clientset.Interface) *v1.NodeList {
-	nodes, err := waitListSchedulableNodes(c)
-	if err != nil {
-		ExpectNoError(err, "Non-retryable failure or timed out while listing nodes for e2e cluster.")
-	}
-	return nodes
-}
-
-// GetReadySchedulableNodesOrDie addresses the common use case of getting nodes you can do work on.
-// 1) Needs to be schedulable.
-// 2) Needs to be ready.
-// If EITHER 1 or 2 is not true, most tests will want to ignore the node entirely.
-// TODO: remove this function here when references point to e2enode.
-func GetReadySchedulableNodesOrDie(c clientset.Interface) (nodes *v1.NodeList) {
-	nodes = waitListSchedulableNodesOrDie(c)
-	// previous tests may have cause failures of some nodes. Let's skip
-	// 'Not Ready' nodes, just in case (there is no need to fail the test).
-	e2enode.Filter(nodes, func(node v1.Node) bool {
-		return e2enode.IsNodeSchedulable(&node) && e2enode.IsNodeUntainted(&node)
-	})
-	return nodes
 }
 
 // WaitForAllNodesSchedulable waits up to timeout for all

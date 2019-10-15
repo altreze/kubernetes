@@ -17,14 +17,13 @@ limitations under the License.
 package util
 
 import (
-	"sort"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
-	"k8s.io/kubernetes/pkg/scheduler/api"
+	extenderv1 "k8s.io/kubernetes/pkg/scheduler/apis/extender/v1"
 )
 
 // GetContainerPorts returns the used host ports of Pods: if 'port' was used, a 'port:true' pair
@@ -62,9 +61,13 @@ func GetPodStartTime(pod *v1.Pod) *metav1.Time {
 	return &metav1.Time{Time: time.Now()}
 }
 
+// lessFunc is a function that receives two items and returns true if the first
+// item should be placed before the second one when the list is sorted.
+type lessFunc = func(item1, item2 interface{}) bool
+
 // GetEarliestPodStartTime returns the earliest start time of all pods that
 // have the highest priority among all victims.
-func GetEarliestPodStartTime(victims *api.Victims) *metav1.Time {
+func GetEarliestPodStartTime(victims *extenderv1.Victims) *metav1.Time {
 	if len(victims.Pods) == 0 {
 		// should not reach here.
 		klog.Errorf("victims.Pods is empty. Should not reach here.")
@@ -88,43 +91,15 @@ func GetEarliestPodStartTime(victims *api.Victims) *metav1.Time {
 	return earliestPodStartTime
 }
 
-// SortableList is a list that implements sort.Interface.
-type SortableList struct {
-	Items    []interface{}
-	CompFunc LessFunc
-}
-
-// LessFunc is a function that receives two items and returns true if the first
-// item should be placed before the second one when the list is sorted.
-type LessFunc func(item1, item2 interface{}) bool
-
-var _ = sort.Interface(&SortableList{})
-
-func (l *SortableList) Len() int { return len(l.Items) }
-
-func (l *SortableList) Less(i, j int) bool {
-	return l.CompFunc(l.Items[i], l.Items[j])
-}
-
-func (l *SortableList) Swap(i, j int) {
-	l.Items[i], l.Items[j] = l.Items[j], l.Items[i]
-}
-
-// Sort sorts the items in the list using the given CompFunc. Item1 is placed
-// before Item2 when CompFunc(Item1, Item2) returns true.
-func (l *SortableList) Sort() {
-	sort.Sort(l)
-}
-
 // MoreImportantPod return true when priority of the first pod is higher than
 // the second one. If two pods' priorities are equal, compare their StartTime.
 // It takes arguments of the type "interface{}" to be used with SortableList,
 // but expects those arguments to be *v1.Pod.
-func MoreImportantPod(pod1, pod2 interface{}) bool {
-	p1 := podutil.GetPodPriority(pod1.(*v1.Pod))
-	p2 := podutil.GetPodPriority(pod2.(*v1.Pod))
+func MoreImportantPod(pod1, pod2 *v1.Pod) bool {
+	p1 := podutil.GetPodPriority(pod1)
+	p2 := podutil.GetPodPriority(pod2)
 	if p1 != p2 {
 		return p1 > p2
 	}
-	return GetPodStartTime(pod1.(*v1.Pod)).Before(GetPodStartTime(pod2.(*v1.Pod)))
+	return GetPodStartTime(pod1).Before(GetPodStartTime(pod2))
 }

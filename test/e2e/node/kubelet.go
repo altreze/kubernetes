@@ -272,6 +272,7 @@ var _ = SIGDescribe("kubelet", func() {
 			nodeLabels = make(map[string]string)
 			nodeLabels["kubelet_cleanup"] = "true"
 			nodes, err := e2enode.GetBoundedReadySchedulableNodes(c, maxNodesToCheck)
+			numNodes = len(nodes.Items)
 			framework.ExpectNoError(err)
 			nodeNames = sets.NewString()
 			for i := 0; i < len(nodes.Items); i++ {
@@ -283,8 +284,14 @@ var _ = SIGDescribe("kubelet", func() {
 				}
 			}
 
+			// While we only use a bounded number of nodes in the test. We need to know
+			// the actual number of nodes in the cluster, to avoid running resourceMonitor
+			// against large clusters.
+			actualNodes, err := e2enode.GetReadySchedulableNodes(c)
+			framework.ExpectNoError(err)
+
 			// Start resourceMonitor only in small clusters.
-			if len(nodes.Items) <= maxNodesToCheck {
+			if len(actualNodes.Items) <= maxNodesToCheck {
 				resourceMonitor = e2ekubelet.NewResourceMonitor(f.ClientSet, e2ekubelet.TargetContainers(), containerStatsPollingInterval)
 				resourceMonitor.Start()
 			}
